@@ -270,7 +270,7 @@ function navFor(page, list, kept = true) {
   const t = page.labels, i = list.indexOf(page.day);
   const prev = i > 0 ? `<a href="#${list[i - 1]}">← ${esc(short(page, list[i - 1]))}</a>` : "<span></span>";
   const next = i >= 0 && i + 1 < list.length ? `<a href="#${list[i + 1]}">${esc(short(page, list[i + 1]))} →</a>` : "<span></span>";
-  return `<nav>${prev}<span class=links>${kept ? `<a href="#kept">${esc(t.kept)}</a>` : ""}<a href="#forget">${esc(s().forget)}</a></span>${next}` +
+  return `<nav>${prev}<span class=links>${kept && t.kept ? `<a href="#kept">${esc(t.kept)}</a>` : ""}<a href="#forget">${esc(s().forget)}</a></span>${next}` +
     `<span class="note"${cantWrite ? "" : " hidden"}>${esc(s().cant_write)}</span></nav>`;
 }
 function watchLooks(st) { // a headline on screen for LOOK_MS while the page is in front
@@ -334,10 +334,10 @@ function reader(page, art, id, idx, evs) {
   const line = why(idx, evs, id, t);
   const less = id in pressed(evs);
   const lessDone = fill(t.less_done, { topic: piece.topic });
-  const whyP = line ? `<p class=why><span>${esc(less ? lessDone : line)}</span> <button class=quiet>${esc(less ? t.undo : t.less)}</button></p>` : "";
+  const whyP = line && t.less ? `<p class=why><span>${esc(less ? lessDone : line)}</span> <button class=quiet>${esc(less ? t.undo : t.less)}</button></p>` : "";
   const head = `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header>${whyP}` +
     `<h1 class=title>${esc(art.title)}</h1>` + (art.byline ? `<p class=byline>${esc(art.byline)}</p>` : "");
-  const foot = `<footer><button id=keep data-kept="${isKept}">${esc(isKept ? t.keeping : t.keep)}</button>` +
+  const foot = `<footer>${t.keep ? `<button id=keep data-kept="${isKept}">${esc(isKept ? t.keeping : t.keep)}</button>` : "<span></span>"}` +
     `<a href="${esc(art.url)}" rel="noreferrer">${esc(t.original)} ↗</a></footer>${after}`;
   show(art.title, head + `<article>${clean(art.html)}</article>`, foot);
   const article = document.querySelector("article");
@@ -350,7 +350,7 @@ function reader(page, art, id, idx, evs) {
     ev.target.previousElementSibling.textContent = on ? line : lessDone;
   });
   const keepB = document.getElementById("keep");
-  keepB.addEventListener("click", () => {
+  keepB?.addEventListener("click", () => {
     const now = keepB.dataset.kept !== "true";
     log({ ev: "keep", id, kept: now });
     keepB.dataset.kept = String(now);
@@ -406,7 +406,7 @@ function reader(page, art, id, idx, evs) {
     bar.hidden = false;
   };
   article.addEventListener("click", (ev) => {
-    if (!getSelection().isCollapsed) return;
+    if (!getSelection().isCollapsed || !t.highlight) return;
     const block = ev.target.closest(BLOCKS);
     if (!block || !blocks.includes(block) || block === picked) return close();
     const text = squash(block.textContent).slice(0, 4000);
@@ -480,7 +480,9 @@ async function route() {
     if (list.at(-1) !== latest) { latest = list.at(-1); othersP = indexP = null; } // a new issue: a new index, and what the other devices did since
     const [day, id] = where.split("/");
     const want = list.includes(day) ? day : list.at(-1);
-    const [page, idx, evs] = await Promise.all([sealed(cfg, frontRel(want)), index(cfg), record(cfg)]);
+    const [page, newest, idx, evs] = await Promise.all([sealed(cfg, frontRel(want)),
+      want === list.at(-1) ? null : sealed(cfg, frontRel(list.at(-1))).catch(() => null), index(cfg), record(cfg)]);
+    if (newest && newest.lang === page.lang) page.labels = { ...page.labels, ...newest.labels }; // the page's words are the newest edition's
     lang = page.lang in SETUP ? page.lang : lang;
     morning = page.morning || morning;
     if (day === "kept") return keptPage(page, list, idx, evs);

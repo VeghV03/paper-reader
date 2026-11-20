@@ -20,7 +20,7 @@ const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0
 const startOf = (day) => { const [y, m, d] = day.split("-").map(Number); return new Date(y, m - 1, d).getTime(); };
 const addDays = (day, n) => iso(new Date(startOf(day) + n * DAY_MS + 12 * 3600000)); // noon: a DST shift stays on the day
 const byTime = (evs) => [...evs].sort((a, b) => at(a) - at(b));
-const fill = (s, v) => s.replace(/\{(\w+)\}/g, (_, k) => v[k]);
+const fill = (s, v) => (s ? s.replace(/\{(\w+)\}/g, (_, k) => v[k]) : ""); // a label an older edition lacks: nothing
 // the Monday (UTC) of an event's week: the record's file for it (D76)
 const week = (t) => { const d = new Date(Date.parse(t)); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
 
