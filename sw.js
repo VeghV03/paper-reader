@@ -1,7 +1,7 @@
 // The page's own files, kept so the paper opens without a network. Issues are cached by app.js,
 // still sealed. A new version of this file replaces the cached code on the next open.
-const SHELL = "shell-v1";
-const FILES = ["./", "index.html", "app.js", "style.css", "icon.png",
+const SHELL = "shell-v2";
+const FILES = ["./", "index.html", "learn.js", "app.js", "style.css", "icon.png",
   "fonts/PaperSerif-Roman.woff2", "fonts/PaperSerif-Italic.woff2"];
 
 self.addEventListener("install", (e) => {
