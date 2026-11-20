@@ -158,6 +158,8 @@ async function sealed(c, rel, key = c.key, raw = false) {
 const frontRel = (day) => `home/edition/${day}.json`;
 const pieceRel = (day, id) => `home/edition/${day}/${id}.json`;
 const INDEX = "home/edition/index.json";
+const monthRel = (month) => `home/edition/months/${month}.json`;
+const THREADS = "home/threads.jsonl";
 const BRIEF = "home/brief.json";
 const recordRel = (device, wk) => `record/${device}/${wk}.jsonl`; // one file a week, so a write stays small (D76)
 
@@ -167,7 +169,7 @@ async function keep(c, page) {
   for (const id of ids) await sealed(c, pieceRel(page.day, id)).catch(() => {});
   const cache = await caches.open(DATA);
   const mine = new Set(["list:home/edition", frontRel(page.day), INDEX, ...ids.map((id) => pieceRel(page.day, id))].map(saved));
-  for (const req of await cache.keys()) if (!mine.has(req.url) && !req.url.includes("record")) await cache.delete(req);
+  for (const req of await cache.keys()) if (!mine.has(req.url) && !/record|\/months\/|threads/.test(req.url)) await cache.delete(req);
 }
 
 // the record: this phone's, and what the reader's other devices wrote (D46)
@@ -176,21 +178,36 @@ let othersP = null;
 function others(c) {
   othersP = othersP || (async () => {
     const out = [];
-    for (const dir of await listing(c, "record").catch(() => [])) {
+    for (const dir of await listing(c, "record")) {
       if (dir.type !== "dir" || dir.name === c.device) continue;
-      for (const f of await listing(c, `record/${dir.name}`).catch(() => [])) {
+      for (const f of await listing(c, `record/${dir.name}`)) {
         const wk = (f.name.match(/^(\d{4}-\d{2}-\d{2})\.jsonl\.sealed$/) || [])[1];
         if (!wk) continue;
-        const text = await sealed(c, recordRel(dir.name, wk), c.rkey, true).catch(() => "");
+        const text = await sealed(c, recordRel(dir.name, wk), c.rkey, true);
         for (const line of text.split("\n")) if (line.trim()) try { out.push(JSON.parse(line)); } catch { /* a torn line */ }
       }
     }
     return out;
-  })();
+  })().catch((e) => { othersP = null; throw e; });
   return othersP;
 }
-let indexP = null, latest = null;
-const index = (c) => (indexP = indexP || sealed(c, INDEX).catch(() => ({ steered: {}, pieces: {} })));
+let indexP = null, threadsP = null, latest = null;
+// the edition's lists: the small index, then a file a month of pieces and cards (D84)
+const none = (empty) => (e) => { if (e.status === 404) return empty; throw e; }; // only a missing file is nothing
+const index = (c) => (indexP = indexP || (async () => {
+  const small = await sealed(c, INDEX).catch(none({ steered: {}, months: [] }));
+  if (small.pieces) return { cards: {}, ...small }; // an edition from before D84
+  const out = { steered: small.steered || {}, pieces: {}, cards: {} };
+  for (const m of await Promise.all((small.months || []).map((month) => sealed(c, monthRel(month))))) {
+    Object.assign(out.pieces, m.pieces || {});
+    Object.assign(out.cards, m.cards || {});
+  }
+  return out;
+})().catch((e) => { indexP = null; throw e; }));
+// the running stories the run keeps; none until it writes one
+const threads = (c) => (threadsP = threadsP || sealed(c, THREADS, c.key, true).then((text) => text.split("\n")
+  .filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+  .filter((th) => th && th.id && Array.isArray(th.entries)), none([])).catch((e) => { threadsP = null; throw e; }));
 async function record(c) { return [...(await others(c)), ...own]; }
 
 // writing back: this phone's weeks that changed, then the brief (D71)
@@ -220,7 +237,7 @@ function sync() {
         const lines = own.filter((e) => week(e.t) === w).map((e) => JSON.stringify(e)).join("\n") + "\n";
         await write(c, rel, await seal(c.rkey, rel, lines), "Record");
       }
-      const b = await brief(await index(c), await record(c), nextDay(morning));
+      const b = await brief(await index(c), await record(c), nextDay(morning), await threads(c));
       await write(c, BRIEF, await seal(c.key, BRIEF, JSON.stringify(b)), "Brief");
       weeks.forEach((w) => { if (!again.has(w)) dirty.delete(w); }); // a week stays marked until it is written
       cantWrite = false;
@@ -286,9 +303,13 @@ function watchLooks(st) { // a headline on screen for LOOK_MS while the page is 
   document.querySelectorAll("li[data-id]").forEach((li) => io.observe(li));
   return () => { io.disconnect(); timers.forEach(clearTimeout); };
 }
-function issue(page, list, idx, evs) {
+function issue(page, list, idx, evs, ths = []) {
   const t = page.labels, st = state(evs), every = marksEver(evs);
-  for (const p of [...page.sections.flatMap((x) => x.pieces), ...page.saved]) if (!st[p.id]) log({ ev: "seen", id: p.id });
+  const all = [...page.sections.flatMap((x) => x.pieces), ...page.saved];
+  for (const p of all) if (!st[p.id]) log({ ev: "seen", id: p.id });
+  const stories = t.since ? moved(idx, evs, ths, page.day, all.map((p) => p.id)) : [];
+  for (const m of stories) if (!m.piece && !st[m.thread.id]) log({ ev: "seen", id: m.thread.id });
+  const first = new Set(stories.map((m) => m.piece).filter(Boolean));
   const item = (p, lead) => `<li data-id="${esc(p.id)}"${finished(st[p.id], (idx.pieces[p.id] || {}).words) ? " class=done" : ""}>` +
     `<a href="#${page.day}/${esc(p.id)}">${esc(p.head)}</a>` + (lead && p.lead ? `<p>${esc(p.lead)}</p>` : "") + `<span>${esc(p.host)}</span></li>`;
   const parts = [];
@@ -300,12 +321,36 @@ function issue(page, list, idx, evs) {
     });
     parts.push(`<section><h2>${esc(t.answers)}</h2><ol>${items.join("")}</ol></section>`);
   }
-  parts.push(...page.sections.map((x) => `<section><h2>${esc(x.name)}</h2><ol>${x.pieces.map((p) => item(p, true)).join("")}</ol></section>`));
+  if (stories.length) {
+    const items = stories.map((m) => m.piece ? item(all.find((p) => p.id === m.piece), true)
+      : `<li data-id="${esc(m.thread.id)}"><a href="#${page.day}/${esc(m.thread.id)}">${esc(m.thread.title)}</a><p>${esc(m.new[0].text)}</p></li>`);
+    parts.push(`<section><h2 class=since>${esc(t.since)}</h2><ol>${items.join("")}</ol></section>`);
+  }
+  parts.push(...page.sections.map((x) => [x.name, x.pieces.filter((p) => !first.has(p.id))]).filter(([, ps]) => ps.length)
+    .map(([name, ps]) => `<section><h2>${esc(name)}</h2><ol>${ps.map((p) => item(p, true)).join("")}</ol></section>`));
   if (page.saved.length) parts.push(`<section><h2>${esc(t.saved)}</h2><ol>${page.saved.map((p) => item(p, false)).join("")}</ol></section>`);
   if (!parts.length) parts.push(`<p class=empty>${esc(t.empty)}</p>`);
   show(page.dateline, `<h1>${esc(page.dateline)}</h1>${parts.join("")}`, navFor(page, list));
   document.querySelectorAll("li.answer blockquote").forEach((q) => q.addEventListener("click", () => q.classList.toggle("open")));
   stop = watchLooks(st);
+}
+function updates(page, fresh, old) {
+  const li = (x) => `<li><span>${esc(short(page, x.day))}</span>${esc(x.text)}</li>`;
+  return (fresh.length ? `<ol class=updates>${fresh.map(li).join("")}</ol>` : "") + (old.length
+    ? `<details class=earlier${fresh.length ? "" : " open"}><summary>${esc(page.labels.earlier)}</summary><ol class=updates>${old.map(li).join("")}</ol></details>` : "");
+}
+function caughtUp(evs, th, left, fresh, upto, piece) {
+  if (!fresh.length || evs.concat(own).some((e) => e.ev === "since" && e.id === th.id && e.upto === upto)) return;
+  const gap = left ? Math.round((startOf(upto) - startOf(left)) / DAY_MS) : null;
+  log({ ev: "since", id: th.id, entries: fresh.length, upto, gap, ...(piece ? { piece } : {}) });
+}
+function storyPage(page, th, evs, idx) { // a story that moved without a piece in the issue
+  const left = leftOff(idx, evs, th, page.day);
+  const mine = [...th.entries].reverse().filter((x) => x.day <= page.day);
+  const fresh = left ? mine.filter((x) => left < x.day) : mine.slice(0, 3);
+  caughtUp(evs, th, left, fresh, page.day);
+  show(th.title, `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header><h1 class=title>${esc(th.title)}</h1>` +
+    `<div class=story>${updates(page, fresh, mine.filter((x) => !fresh.includes(x)))}</div>`);
 }
 function marksEver(evs) { // every mark ever made, deleted or not: an answer quotes its question
   const out = {};
@@ -320,11 +365,13 @@ function keptPage(page, list, idx, evs) {
     navFor({ ...page, day: "" }, list, false));
 }
 
-function reader(page, art, id, idx, evs) {
+function reader(page, art, id, idx, evs, ths = []) {
   const t = page.labels;
   if (!art.html) { log({ ev: "open", id, external: true }); sync(); location.replace(art.url); return; } // the site refused: read it there
   log({ ev: "open", id });
-  const seq = [...page.sections.flatMap((x) => x.pieces), ...page.saved];
+  const listed = [...page.sections.flatMap((x) => x.pieces), ...page.saved];
+  const lifted = t.since ? moved(idx, evs, ths, page.day, listed.map((p) => p.id)).map((m) => m.piece).filter(Boolean) : [];
+  const seq = [...listed.filter((p) => lifted.includes(p.id)), ...listed.filter((p) => !lifted.includes(p.id))];
   const piece = seq.find((p) => p.id === id) || {};
   const nxt = seq[seq.indexOf(piece) + 1];
   const after = nxt ? `<a class=next href="#${page.day}/${esc(nxt.id)}"><span>${esc(t.next)}</span>${esc(nxt.head)}</a>`
@@ -335,11 +382,18 @@ function reader(page, art, id, idx, evs) {
   const less = id in pressed(evs);
   const lessDone = fill(t.less_done, { topic: piece.topic });
   const whyP = line && t.less ? `<p class=why><span>${esc(less ? lessDone : line)}</span> <button class=quiet>${esc(less ? t.undo : t.less)}</button></p>` : "";
-  const head = `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header>${whyP}` +
+  const th = t.earlier && ths.find((x) => x.id === (idx.pieces[id] || {}).thread);
+  const told = th && story(idx, evs, th, id, page.day);
+  let storyP = "";
+  if (told && (told.new.length || told.old.length)) {
+    caughtUp(evs, th, told.left, told.left ? told.new : [], page.day, id);
+    storyP = `<details class=thread${told.new.length ? " open" : ""}><summary>${esc(th.title)}</summary>${updates(page, told.new, told.old)}</details>`;
+  }
+  const head = `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header>${whyP}${storyP}` +
     `<h1 class=title>${esc(art.title)}</h1>` + (art.byline ? `<p class=byline>${esc(art.byline)}</p>` : "");
   const foot = `<footer>${t.keep ? `<button id=keep data-kept="${isKept}">${esc(isKept ? t.keeping : t.keep)}</button>` : "<span></span>"}` +
     `<a href="${esc(art.url)}" rel="noreferrer">${esc(t.original)} ↗</a></footer>${after}`;
-  show(art.title, head + `<article>${clean(art.html)}</article>`, foot);
+  show(art.title, head + `<article>${clean(art.html)}</article><div id=card></div>`, foot);
   const article = document.querySelector("article");
 
   // "less of this", and back
@@ -376,7 +430,15 @@ function reader(page, art, id, idx, evs) {
     }
     last = now;
   };
-  const onAct = () => { tick(); active = Date.now(); measure(); };
+  // finished (as learn.js counts it, with the time of earlier visits): one due card below (D81)
+  const had = st ? st.ms : 0, before = st ? st.progress : 0, words = (idx.pieces[id] || {}).words;
+  let asked = !t.show;
+  const finishedNow = () => {
+    if (asked || !visit || Math.max(before, visit.progress) < FINISHED || had + visit.ms < ((words || 0) / WPM) * 60000 / 3) return;
+    asked = true;
+    record(cfg).catch(() => [...own]).then((all) => showCard(t, due(idx.cards, all, id)));
+  };
+  const onAct = () => { tick(); active = Date.now(); measure(); finishedNow(); };
   for (const ev of ["scroll", "keydown", "pointermove", "touchstart"]) addEventListener(ev, onAct, { passive: true });
   const beat = setInterval(() => { tick(); measure(); saveOwn(); }, BEAT);
   measure();
@@ -434,6 +496,36 @@ function reader(page, art, id, idx, evs) {
     sync();
   };
 }
+function showCard(t, c) {
+  const box = document.getElementById("card");
+  if (!c || !box) return;
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const rate = (r) => { log({ ev: "review", id: c.id, rating: r }); saveOwn(); };
+  box.className = "card";
+  if (c.card === "flip") {
+    const row = el("div", "row"), reveal = el("button", "", t.show);
+    reveal.addEventListener("click", () => {
+      const again = el("button", "", t.again), good = el("button", "", t.good);
+      for (const [b, r] of [[again, "again"], [good, "good"]])
+        b.addEventListener("click", () => { rate(r); row.replaceChildren(el("span", "rated", b.textContent)); });
+      box.insertBefore(el("p", "back", c.back), row);
+      row.replaceChildren(again, good);
+    });
+    row.append(reveal);
+    box.replaceChildren(el("p", "front", c.front), row);
+  } else {
+    const opts = el("div", "options");
+    (c.options || []).forEach((o, i) => {
+      const b = el("button", "", o);
+      b.addEventListener("click", () => {
+        rate(i === c.answer ? "good" : "again");
+        [...opts.children].forEach((x, j) => { x.disabled = true; if (j === c.answer) x.classList.add("right"); else if (j === i) x.classList.add("wrong"); });
+      }, { once: true });
+      opts.append(b);
+    });
+    box.replaceChildren(el("p", "front", c.prompt), opts);
+  }
+}
 function done(page, list) {
   show(page.labels.done, `<h1>${esc(page.dateline)}</h1><p class=end>${esc(page.labels.done)}</p>`, navFor(page, list));
 }
@@ -457,7 +549,7 @@ function setup(error = "", was = {}) {
       await unseal(c.key, "home/sections.md", await res.arrayBuffer(), true);
       await put("cfg", c);
       cfg = c;
-      othersP = indexP = null;
+      othersP = indexP = threadsP = null;
       route();
       sync();
     } catch (e) {
@@ -477,23 +569,28 @@ async function route() {
   try {
     const list = await days(cfg);
     if (!list.length) return show("Paper", `<p class=empty>${esc(s().no_issue)}</p>`);
-    if (list.at(-1) !== latest) { latest = list.at(-1); othersP = indexP = null; } // a new issue: a new index, and what the other devices did since
+    if (list.at(-1) !== latest) { latest = list.at(-1); othersP = indexP = threadsP = null; } // a new issue: a new index, and what the other devices did since
     const [day, id] = where.split("/");
     const want = list.includes(day) ? day : list.at(-1);
-    const [page, newest, idx, evs] = await Promise.all([sealed(cfg, frontRel(want)),
-      want === list.at(-1) ? null : sealed(cfg, frontRel(list.at(-1))).catch(() => null), index(cfg), record(cfg)]);
+    const [page, newest, idx, evs, ths] = await Promise.all([sealed(cfg, frontRel(want)),
+      want === list.at(-1) ? null : sealed(cfg, frontRel(list.at(-1))).catch(() => null), // reading goes on when a list cannot be read; only the brief needs them whole (sync)
+      index(cfg).catch(() => ({ steered: {}, pieces: {}, cards: {} })), record(cfg).catch(() => [...own]), threads(cfg).catch(() => [])]);
     if (newest && newest.lang === page.lang) page.labels = { ...page.labels, ...newest.labels }; // the page's words are the newest edition's
     lang = page.lang in SETUP ? page.lang : lang;
     morning = page.morning || morning;
     if (day === "kept") return keptPage(page, list, idx, evs);
     if (id === "done") return done(page, list);
+    if (id && id.startsWith("t-")) {
+      const th = ths.find((x) => x.id === id);
+      return th ? storyPage(page, th, evs, idx) : issue(page, list, idx, evs, ths);
+    }
     if (id) {
       const p = [...page.sections.flatMap((x) => x.pieces), ...page.saved].find((x) => x.id === id) || idx.pieces[id];
       // past KEEP_DAYS, or never fetched offline: the piece's text is gone, so read it at its outlet
       const art = await sealed(cfg, pieceRel(want, id)).catch((e) => { if (p && e.status === 404) return { url: p.url }; throw e; });
-      return reader(page, art, id, idx, evs);
+      return reader(page, art, id, idx, evs, ths);
     }
-    issue(page, list, idx, evs);
+    issue(page, list, idx, evs, ths);
     if (want === list.at(-1)) keep(cfg, page);
   } catch (e) {
     if (e.wrongKey || e.status === 401) return setup(e.message, { repo: cfg.repo }); // a new token or code

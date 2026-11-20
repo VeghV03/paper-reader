@@ -1,5 +1,5 @@
-// The reading record and what the paper learns from it, as reading.py and topics.py do on a
-// computer (step 3, D70 to D72). Plain functions of the record's events and the edition's index
+// The reading record and what the paper learns from it, as reading.py, topics.py and learn.py do
+// on a computer (step 3, D70 to D72, D80 to D82). Plain functions of the record's events and the edition's index
 // (edition.py), so the same evidence gives the same why line here as there. The draw samples with
 // its own seeded generator: the same day gives the same order, though not Python's.
 "use strict";
@@ -163,6 +163,107 @@ function why(index, evs, id, labels) {
   return fill(labels["why_passed" + (n === 1 ? "_one" : "")], { topic: name, n });
 }
 
+// cards: FSRS 6 as the Mac's learn.py runs it (py-fsrs 6.3.3, no learning steps, no fuzz), with
+// the default parameters until a fit of the reader's own is back (D81)
+const FSRS = [0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796, 1.4835,
+  0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542];
+const RETENTION = 0.9, MAX_INTERVAL = 36500, NEW_A_DAY = 10;
+const RATINGS = { again: 1, good: 3 };
+const DECAY = -FSRS[20], FACTOR = 0.9 ** (1 / DECAY) - 1;
+const clampD = (d) => Math.min(Math.max(d, 1), 10);
+const clampS = (x) => Math.max(x, 0.001);
+const roundEven = (x) => { const f = Math.floor(x), r = x - f; return r > 0.5 ? f + 1 : r < 0.5 ? f : f % 2 ? f + 1 : f; }; // Python's round
+const initD = (r) => FSRS[4] - Math.E ** (FSRS[5] * (r - 1)) + 1;
+const nextD = (d, r) => clampD(FSRS[7] * initD(4) + (1 - FSRS[7]) * (d + (10 - d) * -(FSRS[6] * (r - 3)) / 9));
+const shortS = (x, r) => { let up = Math.E ** (FSRS[17] * (r - 3 + FSRS[18])) * x ** -FSRS[19]; if (r > 1) up = Math.max(up, 1); return clampS(x * up); };
+const forgetS = (d, x, R) => Math.min(FSRS[11] * d ** -FSRS[12] * ((x + 1) ** FSRS[13] - 1) * Math.E ** ((1 - R) * FSRS[14]), x / Math.E ** (FSRS[17] * FSRS[18]));
+const recallS = (d, x, R) => x * (1 + Math.E ** FSRS[8] * (11 - d) * x ** -FSRS[9] * (Math.E ** ((1 - R) * FSRS[10]) - 1));
+const interval = (x) => Math.min(Math.max(roundEven((x / FACTOR) * (RETENTION ** (1 / DECAY) - 1)), 1), MAX_INTERVAL);
+function review(card, r, when) { // card {s, d, last, due} in ms; a new card is {}
+  const out = { ...card };
+  if (out.s == null) { out.s = clampS(FSRS[r - 1]); out.d = clampD(initD(r)); }
+  else {
+    const days = Math.floor((when - out.last) / DAY_MS);
+    if (days < 1) out.s = shortS(out.s, r);
+    else {
+      const R = (1 + FACTOR * Math.max(0, days) / out.s) ** DECAY;
+      out.s = clampS(r === 1 ? forgetS(out.d, out.s, R) : recallS(out.d, out.s, R));
+    }
+    out.d = nextD(out.d, r);
+  }
+  out.due = when + interval(out.s) * DAY_MS;
+  out.last = when;
+  return out;
+}
+// per card id: its FSRS state and when it was first and last reviewed
+function schedule(cards, evs) {
+  const out = Object.fromEntries(Object.keys(cards).map((id) => [id, { card: {}, first: null, last: null }]));
+  for (const e of byTime(evs)) {
+    const s = out[e.id], r = RATINGS[e.rating];
+    if (e.ev !== "review" || !s || !r) continue;
+    s.card = review(s.card, r, at(e));
+    s.first = s.first ?? at(e);
+    s.last = at(e);
+  }
+  return out;
+}
+// the piece a card comes from, through its mark
+function cardPiece(card, evs) {
+  for (const e of evs) if (e.ev === "mark" && e.id === card.from && e.piece) return e.piece;
+  return card.from;
+}
+// the one card after the piece `after`, as learn.due: the most overdue reviewed card, else a new
+// one while fewer than NEW_A_DAY were new today; never one from that piece or reviewed today
+function due(cards, evs, after, now = Date.now()) {
+  const sched = schedule(cards, evs), today = (t) => t != null && iso(new Date(t)) === iso(new Date(now));
+  const open = Object.entries(sched).filter(([id, s]) => cardPiece(cards[id], evs) !== after && !today(s.last));
+  const key = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
+  const old = open.filter(([, s]) => s.first != null && s.card.due <= now).map(([id, s]) => [s.card.due, id]).sort(key);
+  if (old.length) return { id: old[0][1], ...cards[old[0][1]] };
+  if (Object.values(sched).filter((s) => today(s.first)).length >= NEW_A_DAY) return null;
+  const fresh = open.filter(([, s]) => s.first == null).map(([id]) => [cards[id].day, id]).sort(key);
+  return fresh.length ? { id: fresh[0][1], ...cards[fresh[0][1]] } : null;
+}
+// the finished pieces of the RECENT days before `day` with no live mark and no card, newest first
+function toCard(index, evs, day) {
+  const st = state(evs), first = addDays(day, -(RECENT - 1));
+  const marked = new Set(Object.values(marks(evs)).map((m) => m.piece));
+  const carded = new Set(Object.values(index.cards || {}).map((c) => c.from));
+  return Object.entries(index.pieces).filter(([id, p]) => p.day >= first && p.day <= day && finished(st[id], p.words)
+    && !marked.has(id) && !carded.has(id)).sort(([a, p], [b, q]) => (q.day + b < p.day + a ? -1 : 1)).map(([id]) => id);
+}
+
+// running stories, as reading.py and the Mac's server do: where the reader left each one is the
+// newest day of a piece of it they opened, or of an update they opened, before `before`
+function leftOff(index, evs, th, before, st = state(evs)) {
+  const mine = new Set((th.entries || []).map((x) => x && x.piece).filter(Boolean));
+  for (const [id, p] of Object.entries(index.pieces)) if (p.thread === th.id) mine.add(id);
+  const days = [...mine].filter((id) => index.pieces[id] && st[id] && st[id].opened).map((id) => index.pieces[id].day);
+  for (const e of evs) if (e.ev === "since" && e.id === th.id) days.push(String(e.upto || e.t.slice(0, 10)));
+  const before_ = days.filter((d) => d < before).sort();
+  return before_.length ? before_.at(-1) : null;
+}
+const since = (th, left, upto) => [...(th.entries || [])].reverse().filter((x) => (left || "") < x.day && x.day <= upto);
+// Since you left: each story the reader follows with news for them in the day's issue, newest first
+function moved(index, evs, threads, day, pieceIds) {
+  const st = state(evs), out = [];
+  for (const th of threads) {
+    const left = leftOff(index, evs, th, day, st);
+    if (!left) continue;
+    const piece = pieceIds.find((id) => index.pieces[id] && index.pieces[id].thread === th.id && !index.pieces[id].saved) || null;
+    const fresh = since(th, left, day);
+    if (fresh.length || piece) out.push({ thread: th, piece, left, new: fresh, last: fresh.length ? fresh[0].day : day });
+  }
+  return out.sort((a, b) => (a.last < b.last ? 1 : a.last > b.last ? -1 : 0));
+}
+// the story above a piece: updates new to the reader, then the rest; never read: the newest three
+function story(index, evs, th, id, day) {
+  const left = leftOff(index, evs, th, day);
+  const mine = [...(th.entries || [])].reverse().filter((x) => x.piece !== id && x.day <= day);
+  const fresh = left ? mine.filter((x) => left < x.day) : mine.slice(0, 3);
+  return { left, new: fresh, old: mine.filter((x) => !fresh.includes(x)) };
+}
+
 // the next issue: today's until the morning run's time, then tomorrow's
 function nextDay(morning, now = new Date()) {
   const [h, m] = String(morning || "5:07").split(":").map(Number);
@@ -171,7 +272,7 @@ function nextDay(morning, now = new Date()) {
 }
 
 // the brief: decisions only, sealed with the run key for the morning run (D47, brief.py)
-async function brief(index, evs, day) {
+async function brief(index, evs, day, threads = []) {
   const st = state(evs);
   const steer = await draw(index, evs, day);
   for (const sid of Object.keys(steer)) steer[sid].silent = silent(index, st, sid, day);
@@ -181,5 +282,7 @@ async function brief(index, evs, day) {
     marks: Object.values(marks(evs)).filter((m) => iso(new Date(at(m))) >= first) // the run answers within days (D76)
       .map(({ id, piece, kind, text }) => ({ id, piece, kind, text })),
     opened: Object.entries(index.pieces).filter(([id, p]) => p.day >= first && st[id] && st[id].opened).map(([id]) => id),
+    to_card: toCard(index, evs, day),
+    stories: Object.fromEntries(threads.map((th) => [th.id, leftOff(index, evs, th, day, st)]).filter(([, left]) => left)),
   };
 }
