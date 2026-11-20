@@ -272,17 +272,29 @@ function nextDay(morning, now = new Date()) {
 }
 
 // the brief: decisions only, sealed with the run key for the morning run (D47, brief.py)
-// per game, the first answer, as reading.games: a pick or a skip; a crossword's solved entries
+// per game, the first answer, as reading.games: a pick or a skip; a crossword's solved entries;
+// Lede's tries, and whether it was solved, from its guesses (R7, R9)
 function played(evs) {
   const out = {};
   for (const e of evs) {
     if (e.ev !== "game") continue;
-    if (Number.isInteger(e.entry)) { out[e.id] = out[e.id] || { solved: [] }; if (!out[e.id].solved.includes(e.entry)) out[e.id].solved.push(e.entry); }
+    if (typeof e.guess === "string") {
+      const g = out[e.id] = out[e.id] || { tries: 0, solved: false };
+      if (!g.solved) { g.tries += 1; g.solved = e.right === true; }
+    } else if (Number.isInteger(e.entry)) { out[e.id] = out[e.id] || { solved: [] }; if (!out[e.id].solved.includes(e.entry)) out[e.id].solved.push(e.entry); }
     else if (!(e.id in out)) out[e.id] = e.skipped ? { skipped: true } : { pick: e.pick, right: e.right };
   }
   return out;
 }
-const gameDay = (id) => (String(id).match(/^[plx]-(\d{4}-\d{2}-\d{2})/) || [])[1];
+// Lede: each letter of a guess in place, elsewhere in the word, or not in it; a letter is marked
+// as often as the word has it (R5)
+function ledeScore(word, guess) {
+  const out = Array(5).fill("no"), left = [...word];
+  for (let i = 0; i < 5; i++) if (guess[i] === word[i]) { out[i] = "in"; left[i] = null; }
+  for (let i = 0; i < 5; i++) if (out[i] !== "in") { const k = left.indexOf(guess[i]); if (k >= 0) { out[i] = "near"; left[k] = null; } }
+  return out;
+}
+const gameDay = (id) => (String(id).match(/^[plxw]-(\d{4}-\d{2}-\d{2})/) || [])[1];
 async function brief(index, evs, day, threads = []) {
   const st = state(evs);
   const steer = await draw(index, evs, day);
@@ -297,6 +309,7 @@ async function brief(index, evs, day, threads = []) {
     stories: Object.fromEntries(threads.map((th) => [th.id, leftOff(index, evs, th, day, st)]).filter(([, left]) => left)),
     // what was picked, not whether it was right: the run checks it against the issue (D82)
     games: Object.fromEntries(Object.entries(played(evs)).filter(([id]) => gameDay(id) >= first && gameDay(id) <= day)
-      .map(([id, g]) => [id, g.solved ? { solved: [...g.solved].sort((a, b) => a - b) } : g.skipped ? { skipped: true } : { pick: g.pick }])),
+      .map(([id, g]) => [id, "tries" in g ? { tries: g.tries, solved: g.solved } // the guesses stay here (R9)
+        : g.solved ? { solved: [...g.solved].sort((a, b) => a - b) } : g.skipped ? { skipped: true } : { pick: g.pick }])),
   };
 }

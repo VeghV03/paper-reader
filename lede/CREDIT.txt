@@ -1,0 +1,3 @@
+words.txt is every five-letter word of ENABLE (Enhanced North American Benchmark LExicon), from
+the enable1.txt mirror at https://norvig.com/ngrams/enable1.txt. Its maintainers released the
+master list into the public domain and ask that the source be credited.

@@ -243,7 +243,7 @@ function sync() {
       weeks.forEach((w) => { if (!again.has(w)) dirty.delete(w); }); // a week stays marked until it is written
       cantWrite = false;
     } catch (e) {
-      if (e.cantWrite) { cantWrite = true; document.querySelector("nav .note")?.removeAttribute("hidden"); }
+      if (e.cantWrite) { cantWrite = true; document.querySelector("p.note")?.removeAttribute("hidden"); }
       // offline or slow: it stays on the phone and goes with the next write
     } finally {
       again = null;
@@ -284,14 +284,22 @@ function show(title, body, nav = "") {
   $main.innerHTML = body + nav;
   scrollTo(0, 0);
 }
-function navFor(page, list, kept = true) {
-  const t = page.labels, i = list.indexOf(page.day);
+// the bar on every page (R1): today's date, which leads to today's issue, then Kept and Settings;
+// on today's front page the date is the page's title, with its weekday and without the year, to fit one line
+function topBar(page, today = false) {
+  const t = page.labels, day = short(page, latest || page.day);
+  const wd = (t.days || "").split(" ")[(new Date(page.day + "T12:00:00Z").getUTCDay() + 6) % 7] || "";
+  const date = !today ? `<a href="#">${esc(day)}</a>` : `<h1>${esc(!wd ? day : page.lang === "hu" ? `${day}, ${wd}` : `${wd} ${day}`)}</h1>`;
+  const links = (t.kept ? `<a href="#kept">${esc(t.kept)}</a>` : "") +
+    (t.settings ? `<a href="#settings">${esc(t.settings)}</a>` : `<a href="#forget">${esc(s().forget)}</a>`); // Forget sits in Settings
+  return `<header class=top>${date}<span class=links>${links}</span></header>` +
+    `<p class="note"${cantWrite ? "" : " hidden"}>${esc(s().cant_write)}</p>`;
+}
+function navFor(page, list) { // the foot: the issues on either side
+  const i = list.indexOf(page.day);
   const prev = i > 0 ? `<a href="#${list[i - 1]}">← ${esc(short(page, list[i - 1]))}</a>` : "<span></span>";
   const next = i >= 0 && i + 1 < list.length ? `<a href="#${list[i + 1]}">${esc(short(page, list[i + 1]))} →</a>` : "<span></span>";
-  const links = (kept && t.kept ? `<a href="#kept">${esc(t.kept)}</a>` : "") +
-    (t.settings ? `<a href="#settings">${esc(t.settings)}</a>` : `<a href="#forget">${esc(s().forget)}</a>`); // Forget sits in Settings
-  return `<nav>${prev}<span class=links>${links}</span>${next}` +
-    `<span class="note"${cantWrite ? "" : " hidden"}>${esc(s().cant_write)}</span></nav>`;
+  return `<nav>${prev}${next}</nav>`;
 }
 function watchLooks(st) { // a headline on screen for LOOK_MS while the page is in front
   const timers = new Map(), done = new Set(Object.keys(st).filter((id) => st[id].looked));
@@ -334,7 +342,9 @@ function issue(page, list, idx, evs, ths = []) {
   if (page.saved.length) parts.push(`<section><h2>${esc(t.saved)}</h2><ol>${page.saved.map((p) => item(p, false)).join("")}</ol></section>`);
   if (!parts.length) parts.push(`<p class=empty>${esc(t.empty)}</p>`);
   const saveP = t.save_link ? `<p class=save><button class=quiet id=save>${esc(t.save_link)}</button><span class=err></span></p>` : "";
-  show(page.dateline, `<h1>${esc(page.dateline)}</h1>${parts.join("")}${crosswordLink(page)}${saveP}`, navFor(page, list));
+  const today = page.day === latest;
+  show(page.dateline, topBar(page, today) + (today ? "" : `<h1 class=date>${esc(page.dateline)}</h1>`) +
+    gamesLine(page, all, evs) + parts.join("") + saveP, navFor(page, list));
   document.getElementById("save")?.addEventListener("click", (ev) => saveLink(page, ev.target));
   document.querySelectorAll("li.answer blockquote").forEach((q) => q.addEventListener("click", () => q.classList.toggle("open")));
   stop = watchLooks(st);
@@ -355,6 +365,18 @@ async function saveLink(page, button) {
     button.disabled = false;
   }
 }
+// the day's games in one line under the date (R8): Lede, the crossword, then each piece that asks first
+function gamesLine(page, all, evs) {
+  const t = page.labels, done = played([...new Set([...evs, ...own])]);
+  const over = (d) => d && (!("tries" in d) || d.solved || d.tries >= 6);
+  const a = (href, label, id) => `<a href="${href}"${over(done[id]) ? " class=played" : ""}>${esc(label)}</a>`;
+  const out = [];
+  if (page.lede && t.lede) out.push(a(`#${page.day}/lede`, t.lede, page.lede.id));
+  if (page.crossword && t.crossword) out.push(a(`#${page.day}/crossword`, t.crossword, page.crossword.id));
+  if (t.guess) (page.games || []).filter((g) => all.some((p) => p.id === g.piece))
+    .forEach((g, n, gs) => out.push(a(`#${page.day}/${g.piece}`, gs.length > 1 ? `${t.guess} ${n + 1}` : t.guess, g.id)));
+  return out.length ? `<p class=games>${out.join("")}</p>` : "";
+}
 function updates(page, fresh, old) {
   const li = (x) => `<li><span>${esc(short(page, x.day))}</span>${esc(x.text)}</li>`;
   return (fresh.length ? `<ol class=updates>${fresh.map(li).join("")}</ol>` : "") + (old.length
@@ -370,7 +392,7 @@ function storyPage(page, th, evs, idx) { // a story that moved without a piece i
   const mine = [...th.entries].reverse().filter((x) => x.day <= page.day);
   const fresh = left ? mine.filter((x) => left < x.day) : mine.slice(0, 3);
   caughtUp(evs, th, left, fresh, page.day);
-  show(th.title, `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header><h1 class=title>${esc(th.title)}</h1>` +
+  show(th.title, `${topBar(page)}<h1 class=title>${esc(th.title)}</h1>` +
     `<div class=story>${updates(page, fresh, mine.filter((x) => !fresh.includes(x)))}</div>`);
 }
 function marksEver(evs) { // every mark ever made, deleted or not: an answer quotes its question
@@ -382,8 +404,7 @@ function keptPage(page, list, idx, evs) {
   const t = page.labels, st = state(evs);
   const mine = Object.entries(idx.pieces).filter(([id, p]) => kept(p, st[id])).sort(([a, p], [b, q]) => (p.day + a > q.day + b ? -1 : 1));
   const items = mine.map(([id, p]) => `<li><a href="#${p.day}/${esc(id)}">${esc(p.head)}</a><span>${esc(p.host)} · ${esc(short(page, p.day))}</span></li>`);
-  show(t.kept, `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header><h1>${esc(t.kept)}</h1>` + (items.length ? `<ol>${items.join("")}</ol>` : `<p class=empty>${esc(t.nothing_kept)}</p>`),
-    navFor({ ...page, day: "" }, list, false));
+  show(t.kept, `${topBar(page)}<h1>${esc(t.kept)}</h1>` + (items.length ? `<ol>${items.join("")}</ol>` : `<p class=empty>${esc(t.nothing_kept)}</p>`));
 }
 
 // Settings, as the Mac's (D87): each part saves when it changes, checked first (settings.js), sealed
@@ -391,8 +412,8 @@ function keptPage(page, list, idx, evs) {
 async function settingsPage(page, list, idx, evs) {
   const t = page.labels, c = cfg;
   // Forget this phone first: it stays within reach when the files cannot be read
-  show(t.settings, `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header><h1>${esc(t.settings)}</h1><div id=settings></div>` +
-    `<section><p><a href="#forget">${esc(s().forget)}</a></p></section>`, navFor({ ...page, day: "" }, list, true));
+  show(t.settings, `${topBar(page)}<h1>${esc(t.settings)}</h1><div id=settings></div>` +
+    `<section><p><a href="#forget">${esc(s().forget)}</a></p></section>`);
   const root = document.getElementById("settings");
   const text = (name) => sealed(c, `home/${name}`, c.key, true).catch(none(""));
   let secT, intT, feedT, outT, papT;
@@ -538,7 +559,7 @@ function reader(page, art, id, idx, evs, ths = []) {
   const line = why(idx, evs, id, t);
   const less = id in pressed(evs);
   const lessDone = fill(t.less_done, { topic: piece.topic });
-  const whyP = line && t.less ? `<p class=why><span>${esc(less ? lessDone : line)}</span> <button class=quiet>${esc(less ? t.undo : t.less)}</button></p>` : "";
+  const whyP = line && t.less ? `<p class=why><span>${esc(less ? lessDone : line)}</span> <button>${esc(less ? t.undo : t.less)}</button></p>` : "";
   // a prediction or a link is asked before the piece: the article waits for a pick or a skip
   const game = t.skip && (page.games || []).find((g) => g.piece === id);
   const answered = game && played(evs.concat(own))[game.id];
@@ -556,11 +577,15 @@ function reader(page, art, id, idx, evs, ths = []) {
   const box = game ? "<div id=game></div>" : "";
   // an outlet's title often states the finding: a prediction shows the paper's headline until answered
   const hidden = asking && !link;
-  const head = `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header>${link ? box : ""}${whyP}${storyP}` +
-    `<h1 class=title>${esc(hidden ? piece.head || art.title : art.title)}</h1>` + (art.byline ? `<p class=byline>${esc(art.byline)}</p>` : "") + (link ? "" : box);
+  // the headline tapped (R2); the outlet's own title moves into the byline, held back while a
+  // prediction is asked, since it often states the finding
+  const headline = piece.head || (idx.pieces[id] || {}).head || art.title;
+  const cite = art.title && art.title !== headline ? `<cite${hidden ? " hidden" : ""}>${esc(art.title)}</cite>` : "";
+  const head = `${topBar(page)}${link ? box : ""}${storyP}<h1 class=title>${esc(headline)}</h1>` +
+    (cite || art.byline ? `<p class=byline>${cite}${esc(art.byline || "")}</p>` : "") + whyP + (link ? "" : box);
   const foot = `<footer>${t.keep ? `<button id=keep data-kept="${isKept}">${esc(isKept ? t.keeping : t.keep)}</button>` : "<span></span>"}` +
     `<a href="${esc(art.url)}" rel="noreferrer">${esc(t.original)} ↗</a></footer>${after}`;
-  show(hidden ? piece.head || art.title : art.title, head + `<article${asking ? " hidden" : ""}>${clean(art.html)}</article><div id=reveal></div><div id=card></div>`, foot);
+  show(headline, head + `<article${asking ? " hidden" : ""}>${clean(art.html)}</article><div id=reveal></div><div id=card></div>`, foot);
   const article = document.querySelector("article");
 
   // "less of this", and back
@@ -634,8 +659,8 @@ function reader(page, art, id, idx, evs, ths = []) {
         asking = false;
         gbox.replaceChildren();
         article.hidden = false; article.classList.add("late");
-        document.querySelector("h1.title").textContent = art.title;
-        document.title = art.title;
+        const cite = document.querySelector(".byline cite");
+        if (cite) cite.hidden = false;
         const thread = document.querySelector("details.thread");
         if (thread && held) { thread.hidden = false; thread.open = true; catchUp(); }
         last = active = Date.now(); measure();
@@ -652,32 +677,78 @@ function reader(page, art, id, idx, evs, ths = []) {
     }
   }
 
-  // marks: a tap on a paragraph highlights it or asks about it; a mark is kept by its text
+  // marks (R3, R4): a tap on a paragraph marks all of it; words selected mark just those. A mark is
+  // kept by its text: a whole paragraph's lights the paragraph, a few words light the first place
+  // they appear. A selection that runs past its paragraph keeps the part in the first one.
   const squash = (x) => x.replace(/\s+/g, " ").trim();
   const blocks = [...article.querySelectorAll(BLOCKS)].filter((b) => !b.querySelector(BLOCKS));
   const on = new Map();
   const paint = (block, m) => { block.classList.add("m-" + m.kind); on.set(block, [...(on.get(block) || []), m]); };
-  for (const m of Object.values(marks(evs))) {
-    if (m.piece !== id) continue;
+  const wrap = (block, m) => {
+    const map = [];
+    let flat = "", space = true;
+    const walk = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    for (let n; (n = walk.nextNode());) for (let i = 0; i < n.data.length; i++) {
+      const ws = /\s/.test(n.data[i]);
+      if (ws && space) continue;
+      flat += ws ? " " : n.data[i]; map.push([n, i]); space = ws;
+    }
+    const at = flat.indexOf(m.text);
+    if (at < 0) return false;
+    const r = document.createRange(), [end, k] = map[at + m.text.length - 1];
+    r.setStart(...map[at]); r.setEnd(end, k + 1);
+    const mk = Object.assign(document.createElement("mark"), { className: m.kind });
+    mk.dataset.id = m.id;
+    try { r.surroundContents(mk); } catch { mk.append(r.extractContents()); r.insertNode(mk); } // across an <em>: split it
+    return true;
+  };
+  const light = (m) => {
     const whole = blocks.find((b) => squash(b.textContent) === m.text);
-    if (whole) paint(whole, m);
-  }
+    if (whole) paint(whole, m); else blocks.some((b) => squash(b.textContent).includes(m.text) && wrap(b, m));
+  };
+  for (const m of Object.values(marks(evs))) if (m.piece === id) light(m);
+  const mark = async (kind, text) => light(log({ ev: "mark", id: await markId(id, kind, text), piece: id, kind, text }));
   const bar = document.createElement("div");
   bar.className = "bar"; bar.hidden = true; document.body.appendChild(bar);
-  let picked = null;
+  bar.addEventListener("pointerdown", () => { pressing = true; });
+  for (const ev of ["pointerup", "pointercancel"]) bar.addEventListener(ev, () => setTimeout(() => { pressing = false; }, 300));
+  let picked = null, bySelection = false, pressing = false;
   const pick = (b) => { picked?.classList.remove("picked"); picked = b; b?.classList.add("picked"); };
-  const close = () => { bar.hidden = true; pick(null); };
-  const open = (acts) => {
+  const close = () => { bar.hidden = true; bySelection = false; pick(null); };
+  const open = (acts, sel = false) => {
     bar.replaceChildren(...acts.map(([label, fn]) => {
       const b = document.createElement("button");
       b.textContent = label;
+      b.addEventListener("pointerdown", (ev) => ev.preventDefault()); // a tap here keeps the selection
       b.addEventListener("click", () => { close(); fn(); });
       return b;
     }));
+    bySelection = sel;
     bar.hidden = false;
   };
+  const onSelect = () => {
+    if (!t.highlight) return;
+    const sel = getSelection();
+    if (sel.isCollapsed || !sel.rangeCount) { if (bySelection && !pressing) close(); return; }
+    const r = sel.getRangeAt(0).cloneRange();
+    const start = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement;
+    const block = start && start.closest(BLOCKS);
+    if (!block || !blocks.includes(block)) { if (bySelection) close(); return; }
+    if (!block.contains(r.endContainer)) r.setEnd(block, block.childNodes.length);
+    const text = squash(r.toString()).slice(0, 4000);
+    if (text.length < 3) return;
+    pick(null);
+    open([["highlight", t.highlight], ["question", t.question]]
+      .map(([kind, label]) => [label, () => { getSelection().removeAllRanges(); mark(kind, text); }]), true);
+  };
+  document.addEventListener("selectionchange", onSelect);
   article.addEventListener("click", (ev) => {
     if (!getSelection().isCollapsed || !t.highlight) return;
+    const mk = ev.target.closest("mark[data-id]");
+    if (mk) { // a few words marked: a tap offers to take the mark off
+      pick(null);
+      return open([[t.remove, () => { log({ ev: "unmark", id: mk.dataset.id }); mk.replaceWith(...mk.childNodes); }]]);
+    }
     const block = ev.target.closest(BLOCKS);
     if (!block || !blocks.includes(block) || block === picked) return close();
     const text = squash(block.textContent).slice(0, 4000);
@@ -685,7 +756,7 @@ function reader(page, art, id, idx, evs, ths = []) {
     pick(block);
     const has = on.get(block) || [];
     const acts = [["highlight", t.highlight], ["question", t.question]].filter(([k]) => !has.some((m) => m.kind === k))
-      .map(([kind, label]) => [label, async () => paint(block, log({ ev: "mark", id: await markId(id, kind, text), piece: id, kind, text }))]);
+      .map(([kind, label]) => [label, () => mark(kind, text)]);
     if (has.length) acts.push([t.remove, () => {
       has.forEach((m) => { log({ ev: "unmark", id: m.id }); block.classList.remove("m-" + m.kind); });
       on.delete(block);
@@ -699,6 +770,7 @@ function reader(page, art, id, idx, evs, ths = []) {
     tick(); measure();
     for (const ev of ["scroll", "keydown", "pointermove", "touchstart"]) removeEventListener(ev, onAct);
     document.removeEventListener("click", outside);
+    document.removeEventListener("selectionchange", onSelect);
     clearInterval(beat);
     bar.remove();
     saveOwn();
@@ -738,7 +810,7 @@ function showCard(t, c) {
 const crosswordLink = (page) => (page.crossword && page.labels.crossword
   ? `<a class=next href="#${page.day}/crossword">${esc(page.labels.crossword)}</a>` : "");
 function done(page, list) {
-  show(page.labels.done, `<h1>${esc(page.dateline)}</h1><p class=end>${esc(page.labels.done)}</p>${crosswordLink(page)}`, navFor(page, list));
+  show(page.labels.done, `${topBar(page)}<h1 class=date>${esc(page.dateline)}</h1><p class=end>${esc(page.labels.done)}</p>${crosswordLink(page)}`, navFor(page, list));
 }
 // Sunday's crossword, as the Mac's: the grid comes laid out in the edition; letters typed stay on
 // this phone, and each word solved goes into the record (D82)
@@ -754,7 +826,7 @@ function crosswordPage(page, idx, evs) {
     });
     return items.length ? `<section><h2>${esc(t[down ? "down" : "across"])}</h2><ol>${items.join("")}</ol></section>` : "";
   });
-  show(t.crossword, `<header><a href="#${page.day}">← ${esc(short(page, page.day))}</a></header><h1>${esc(t.crossword)}</h1>` +
+  show(t.crossword, `${topBar(page)}<h1>${esc(t.crossword)}</h1>` +
     `<div class=grid id=grid><input id=type autocapitalize=characters autocomplete=off autocorrect=off spellcheck=false aria-label="${esc(t.crossword)}"></div>` +
     `<div id=clues>${lists.join("")}</div><div class=clue id=clue hidden></div>`);
   const grid = document.getElementById("grid"), input = document.getElementById("type"), bar = document.getElementById("clue");
@@ -881,6 +953,74 @@ function crosswordPage(page, idx, evs) {
     saveOwn(); sync();
   };
 }
+let wordsP = null;
+const ledeWords = () => (wordsP = wordsP || fetch("lede/words.txt").then((r) => r.text())
+  .then((x) => new Set(x.split(/\s+/))).catch((e) => { wordsP = null; throw e; }));
+function ledePage(page, idx, evs) {
+  const t = page.labels, { id, word, piece } = page.lede;
+  const guesses = [...new Set([...evs, ...own])].filter((e) => e.ev === "game" && e.id === id && typeof e.guess === "string")
+    .sort((a, b) => (a.t < b.t ? -1 : 1)).map((e) => e.guess);
+  const end = guesses.indexOf(word) + 1 || 6;
+  guesses.splice(end);
+  const p = [...page.sections.flatMap((x) => x.pieces), ...page.saved].find((x) => x.id === piece) || idx.pieces[piece];
+  const keys = ["qwertyuiop", "asdfghjkl", "+zxcvbnm-"];
+  show(t.lede, `${topBar(page)}<h1>${esc(t.lede)}</h1><div class=lede id=board></div><p class=said id=said></p>` +
+    `<div class=keys id=keys>${keys.map((row) => `<div>${[...row].map((k) => k === "+"
+      ? `<button data-k=enter aria-label=Enter>↵</button>` : k === "-"
+      ? `<button data-k=back aria-label=Delete>⌫</button>` : `<button data-k=${k}>${k}</button>`).join("")}</div>`).join("")}</div>` +
+    `<div id=after></div>`);
+  const board = document.getElementById("board"), said = document.getElementById("said"), keyEls = document.getElementById("keys");
+  const rank = { no: 1, near: 2, in: 3 };
+  let typed = "";
+  const over = () => guesses.includes(word) || guesses.length >= 6;
+  const draw = () => {
+    const best = {};
+    board.replaceChildren(...Array.from({ length: 6 }, (_, r) => {
+      const g = guesses[r], marks = g ? ledeScore(word, g) : [], letters = g || (r === guesses.length && !over() ? typed : "");
+      const row = document.createElement("div");
+      for (let i = 0; i < 5; i++) {
+        const c = document.createElement("span");
+        c.textContent = letters[i] || "";
+        if (g) { c.className = marks[i]; if ((rank[marks[i]] || 0) > (rank[best[g[i]]] || 0)) best[g[i]] = marks[i]; }
+        else if (letters[i]) c.className = "typed";
+        row.append(c);
+      }
+      return row;
+    }));
+    keyEls.querySelectorAll("button").forEach((b) => { b.className = best[b.dataset.k] || ""; });
+    keyEls.hidden = over();
+    if (over()) document.getElementById("after").innerHTML = `<p class=word>${esc(word)}</p>` +
+      (p ? `<a class=next href="#${p.day || page.day}/${esc(piece)}">${esc(p.head)}</a>` : "");
+  };
+  const enter = async () => {
+    if (typed.length < 5) return;
+    let ok = typed === word;
+    if (!ok) try { ok = (await ledeWords()).has(typed); } catch { ok = true; } // offline before the list was saved: any five letters
+    if (!ok) { said.textContent = t.not_word || ""; return; }
+    guesses.push(typed);
+    log({ ev: "game", id, guess: typed, right: typed === word });
+    typed = "";
+    draw();
+  };
+  const press = (k) => {
+    if (over()) return;
+    said.textContent = "";
+    if (k === "enter") return enter();
+    if (k === "back") typed = typed.slice(0, -1);
+    else if (/^[a-z]$/.test(k) && typed.length < 5) typed += k;
+    draw();
+  };
+  keyEls.addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) press(b.dataset.k); });
+  const onKey = (ev) => {
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const k = ev.key === "Enter" ? "enter" : ev.key === "Backspace" ? "back" : ev.key.toLowerCase();
+    if (k === "enter" || k === "back" || /^[a-z]$/.test(k)) { ev.preventDefault(); press(k); }
+  };
+  document.addEventListener("keydown", onKey);
+  draw();
+  ledeWords().catch(() => {}); // fetched now, so the first guess does not wait
+  stop = () => { document.removeEventListener("keydown", onKey); saveOwn(); sync(); };
+}
 function setup(error = "", was = {}) {
   const t = s();
   show("Paper", `<h1>Paper</h1><form id=setup>
@@ -934,6 +1074,7 @@ async function route() {
     if (day === "settings" && page.labels.settings) return await settingsPage(page, list, idx, evs);
     if (id === "done") return done(page, list);
     if (id === "crossword" && page.crossword && page.labels.crossword) return crosswordPage(page, idx, evs);
+    if (id === "lede" && page.lede && page.labels.lede) return ledePage(page, idx, evs);
     if (id && id.startsWith("t-")) {
       const th = ths.find((x) => x.id === id);
       return th ? storyPage(page, th, evs, idx) : issue(page, list, idx, evs, ths);
