@@ -182,3 +182,7 @@ form button { justify-self: start; }
 .end { font: 650 21px/1.3 var(--serif); margin: 0 0 48px; }
 nav .note { flex-basis: 100%; order: 4; color: var(--grey); font-size: 14px; white-space: normal; }
 nav .note[hidden] { display: none; }
+#settings [hidden] { display: none; }
+.save { margin: 40px 0 0; }
+.save button { padding-left: 0; }
+.save .err { display: block; color: var(--grey); font-size: 14.5px; overflow-wrap: anywhere; }

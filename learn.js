@@ -208,15 +208,15 @@ function schedule(cards, evs) {
   return out;
 }
 // the piece a card comes from, through its mark
-function cardPiece(card, evs) {
+function cardPiece(card, evs, games = {}) { // a card's piece: through the mark, or the missed game, it came from
   for (const e of evs) if (e.ev === "mark" && e.id === card.from && e.piece) return e.piece;
-  return card.from;
+  return games[card.from] || card.from;
 }
 // the one card after the piece `after`, as learn.due: the most overdue reviewed card, else a new
 // one while fewer than NEW_A_DAY were new today; never one from that piece or reviewed today
-function due(cards, evs, after, now = Date.now()) {
+function due(cards, evs, after, now = Date.now(), games = {}) {
   const sched = schedule(cards, evs), today = (t) => t != null && iso(new Date(t)) === iso(new Date(now));
-  const open = Object.entries(sched).filter(([id, s]) => cardPiece(cards[id], evs) !== after && !today(s.last));
+  const open = Object.entries(sched).filter(([id, s]) => cardPiece(cards[id], evs, games) !== after && !today(s.last));
   const key = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
   const old = open.filter(([, s]) => s.first != null && s.card.due <= now).map(([id, s]) => [s.card.due, id]).sort(key);
   if (old.length) return { id: old[0][1], ...cards[old[0][1]] };
@@ -272,6 +272,17 @@ function nextDay(morning, now = new Date()) {
 }
 
 // the brief: decisions only, sealed with the run key for the morning run (D47, brief.py)
+// per game, the first answer, as reading.games: a pick or a skip; a crossword's solved entries
+function played(evs) {
+  const out = {};
+  for (const e of evs) {
+    if (e.ev !== "game") continue;
+    if (Number.isInteger(e.entry)) { out[e.id] = out[e.id] || { solved: [] }; if (!out[e.id].solved.includes(e.entry)) out[e.id].solved.push(e.entry); }
+    else if (!(e.id in out)) out[e.id] = e.skipped ? { skipped: true } : { pick: e.pick, right: e.right };
+  }
+  return out;
+}
+const gameDay = (id) => (String(id).match(/^[plx]-(\d{4}-\d{2}-\d{2})/) || [])[1];
 async function brief(index, evs, day, threads = []) {
   const st = state(evs);
   const steer = await draw(index, evs, day);
@@ -284,5 +295,8 @@ async function brief(index, evs, day, threads = []) {
     opened: Object.entries(index.pieces).filter(([id, p]) => p.day >= first && st[id] && st[id].opened).map(([id]) => id),
     to_card: toCard(index, evs, day),
     stories: Object.fromEntries(threads.map((th) => [th.id, leftOff(index, evs, th, day, st)]).filter(([, left]) => left)),
+    // what was picked, not whether it was right: the run checks it against the issue (D82)
+    games: Object.fromEntries(Object.entries(played(evs)).filter(([id]) => gameDay(id) >= first && gameDay(id) <= day)
+      .map(([id, g]) => [id, g.solved ? { solved: [...g.solved].sort((a, b) => a - b) } : g.skipped ? { skipped: true } : { pick: g.pick }])),
   };
 }
