@@ -97,6 +97,7 @@ async function unseal(key, rel, buf, raw = false) {
   } catch {
     throw Object.assign(new Error(s().wrong_key), { wrongKey: true });
   }
+  if (raw === "bytes") return plain; // the cover's picture
   const text = new TextDecoder().decode(plain);
   return raw ? text : JSON.parse(text);
 }
@@ -157,6 +158,8 @@ async function sealed(c, rel, key = c.key, raw = false) {
 }
 const frontRel = (day) => `home/edition/${day}.json`;
 const pieceRel = (day, id) => `home/edition/${day}/${id}.json`;
+const coverRel = (day, theme) => `home/edition/${day}/cover-${theme}.jpg`;
+const theme = () => (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 const INDEX = "home/edition/index.json";
 const monthRel = (month) => `home/edition/months/${month}.json`;
 const THREADS = "home/threads.jsonl";
@@ -168,7 +171,9 @@ async function keep(c, page) {
   const ids = [...page.sections.flatMap((x) => x.pieces), ...page.saved].map((p) => p.id);
   for (const id of ids) await sealed(c, pieceRel(page.day, id)).catch(() => {});
   const cache = await caches.open(DATA);
-  const mine = new Set(["list:home/edition", frontRel(page.day), INDEX, ...ids.map((id) => pieceRel(page.day, id))].map(saved));
+  const covers = page.cover ? ["light", "dark"].map((th) => coverRel(page.day, th)) : [];
+  for (const rel of covers) await sealed(c, rel, c.key, "bytes").catch(() => {});
+  const mine = new Set(["list:home/edition", frontRel(page.day), INDEX, ...covers, ...ids.map((id) => pieceRel(page.day, id))].map(saved));
   for (const req of await cache.keys()) if (!mine.has(req.url) && !/record|\/months\/|threads/.test(req.url)) await cache.delete(req);
 }
 
@@ -348,6 +353,23 @@ function issue(page, list, idx, evs, ths = []) {
   document.getElementById("save")?.addEventListener("click", (ev) => saveLink(page, ev.target));
   document.querySelectorAll("li.answer blockquote").forEach((q) => q.addEventListener("click", () => q.classList.toggle("open")));
   stop = watchLooks(st);
+}
+// the cover (BR14): the day's first screen, once an issue; one tap passes it. Shown is opened (BR32).
+// A cover that cannot be read is skipped: the issue never waits on its picture.
+async function coverPage(page, list, idx, evs, ths) {
+  const pass = () => { issue(page, list, idx, evs, ths); keep(cfg, page); };
+  let url;
+  try {
+    url = URL.createObjectURL(new Blob([await sealed(cfg, coverRel(page.day, theme()), cfg.key, "bytes")], { type: "image/jpeg" }));
+  } catch {
+    return pass();
+  }
+  show(page.dateline, `<button class=cover id=cover><img src="${url}" alt="${esc(page.cover.claim)}"></button>`);
+  const img = document.querySelector("#cover img");
+  img.addEventListener("load", () => log({ ev: "cover", id: page.day }), { once: true });
+  img.addEventListener("error", pass, { once: true });
+  document.getElementById("cover").addEventListener("click", pass, { once: true });
+  stop = () => URL.revokeObjectURL(url);
 }
 // Save a link (D86): the link on the clipboard, in a file of its own that the run folds into inbox.md
 async function saveLink(page, button) {
@@ -1085,6 +1107,8 @@ async function route() {
       const art = await sealed(cfg, pieceRel(want, id)).catch((e) => { if (p && e.status === 404) return { url: p.url }; throw e; });
       return reader(page, art, id, idx, evs, ths);
     }
+    if (!where && want === list.at(-1) && page.cover && !evs.some((e) => e.ev === "cover" && e.id === want))
+      return await coverPage(page, list, idx, evs, ths);
     issue(page, list, idx, evs, ths);
     if (want === list.at(-1)) keep(cfg, page);
   } catch (e) {

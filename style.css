@@ -214,3 +214,7 @@ form button { justify-self: start; }
 .keys button.no { background: var(--rule); color: var(--grey); }
 .keys[hidden] { display: none; }
 .word { text-align: center; font: 800 30px/1 var(--serif); letter-spacing: .3em; text-transform: uppercase; margin: 8px 0 0; }
+/* the cover (BR14): the day's picture, whole on any phone, on the page's own ground */
+button.cover { position: fixed; inset: 0; z-index: 1; display: block; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; background: var(--bg); cursor: pointer; }
+button.cover img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center top; }
+button.cover:active { transform: none; }
